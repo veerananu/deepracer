@@ -1,0 +1,42 @@
+import math
+
+def reward_function(params):
+    # Read input variables
+    waypoints = params['waypoints']
+    closest_waypoints = params['closest_waypoints']
+    heading = params['heading']   
+
+    distance_from_center = params['distance_from_center']   
+
+    track_width = params['track_width']
+
+    # Calculate the direction of the center line based on waypoints
+    next_point = waypoints[closest_waypoints[1]]
+    prev_point = waypoints[closest_waypoints[0]]
+
+    # Calculate track direction in degrees
+    track_direction = math.atan2(next_point[1] - prev_point[1], next_point[0] - prev_point[0])
+    track_direction = math.degrees(track_direction)
+
+    # Calculate the difference between the track direction and the   
+ car's heading
+    direction_diff = abs(track_direction - heading)
+
+    # Normalize the direction difference to be within 0-180 degrees
+    if direction_diff > 180:
+        direction_diff = 360 - direction_diff
+
+    # Penalize the reward based on direction difference
+    DIRECTION_THRESHOLD = 10.0
+    if direction_diff > DIRECTION_THRESHOLD:
+        reward *= (1 - (direction_diff / 180))  # Gradual reward scaling
+
+    # Reward based on distance from center to encourage staying on track
+    if distance_from_center > (track_width / 2):
+        reward *= 0.1  # Penalize significantly if off track
+    else:
+        # The closer to the center, the higher the reward
+        reward += (1 - (distance_from_center / (track_width / 2)) * 0.5  # Bonus for staying on track
+
+    # Return the final computed reward
+    return float(reward)
