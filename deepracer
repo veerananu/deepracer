@@ -6,38 +6,33 @@ def reward_function(params):
     closest_waypoints = params['closest_waypoints']
     heading = params['heading']
     all_wheels_on_track = params['all_wheels_on_track']
-    distance_from_center = params['distance_from_center']
-    track_width = params['track_width']
-
-    # Initialize the reward
+    
+    # Initialize the reward with a typical value
     reward = 1.0
 
     # Penalize if the car is off track
     if not all_wheels_on_track:
-        return float(1e-3)  # Very low reward if any wheel is off track
+        reward = 1e-3  # Minimum reward to discourage going off track
+        return float(reward)
 
-    # Calculate the direction of the center line based on waypoints
+    # Calculate the direction of the center line based on closest waypoints
     next_point = waypoints[closest_waypoints[1]]
     prev_point = waypoints[closest_waypoints[0]]
-
-    # Calculate track direction
+    
+    # Calculate the direction in radians using atan2(dy, dx)
     track_direction = math.atan2(next_point[1] - prev_point[1], next_point[0] - prev_point[0])
+    
+    # Convert radians to degrees
     track_direction = math.degrees(track_direction)
-
-    # Calculate the direction difference
+    
+    # Calculate the difference between the track direction and the car's heading
     direction_diff = abs(track_direction - heading)
     if direction_diff > 180:
         direction_diff = 360 - direction_diff
-
-    # Penalize the reward based on direction difference
+    
+    # Penalize the reward if the direction difference is too large
     DIRECTION_THRESHOLD = 10.0
     if direction_diff > DIRECTION_THRESHOLD:
-        reward *= (1 - (direction_diff / 180))  # Gradual penalty based on direction
-
-    # Reward based on distance from center
-    if distance_from_center > (track_width / 2):
-        reward *= 0.1  # Strong penalty for being off the track
-    else:
-        reward += (1 - (distance_from_center / (track_width / 2)) * 0.5  # Bonus for being closer to the center
+        reward *= 0.5
 
     return float(reward)
