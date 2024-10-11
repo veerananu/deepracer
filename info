@@ -414,3 +414,51 @@ Advantage: Offers flexibility and potentially more precise control. It is especi
 Limitation: More difficult to manage and may require more sophisticated algorithms for effective learning.
 
 Conclusion
+
+
+
+Number of Epochs
+The number of epochs refers to the passes through the training data to update the neural network weights during the gradient descent process. Adjusting the number of epochs is crucial as it determines how thoroughly the model learns from the training data. A higher number of epochs can lead to better generalization, but it may also result in overfitting if set excessively high.
+Entropy
+Entropy measures the uncertainty in the policy, indicating how confident the model is when selecting actions for a given state. High entropy suggests that the model is exploring various actions without clear preferences, which can be beneficial early in training. However, as training progresses, a decrease in entropy (to around 0.2-0.4) is preferable for improved stability and performance, indicating the model has learned to make confident decisions based on its experience. Balancing the entropy hyperparameter is vital for finding the right level between exploration and exploitation during training
+
+
+
+
+
+
+In AWS DeepRacer, hyperparameters are crucial for optimizing the training of your reinforcement learning model. Here’s a breakdown of the key hyperparameters you can configure:
+
+Batch Size:
+
+The number of samples used in one iteration to update the model's weights. Common values are 32, 64, or 128. Larger batch sizes can stabilize training but require more memory.
+Learning Rate:
+
+Controls how much to change the model in response to the estimated error each time the model weights are updated. Typical values are in the range of 
+0.0001
+0.0001 to 
+0.001
+0.001.
+Discount Factor (Gamma):
+
+A value between 0 and 1 that determines how much future rewards affect current decisions. A value closer to 1 values future rewards more.
+Reward Scale:
+
+Scales the reward signal before it is passed to the training algorithm. You can adjust this to emphasize certain behaviors.
+Epsilon:
+
+In epsilon-greedy exploration, this parameter defines the probability of taking a random action instead of the best-known action. It helps in exploring the environment effectively. Typical values can start from 
+1.0
+1.0 and decay over time.
+Epsilon Decay:
+
+The rate at which epsilon decreases over training episodes. This helps the model to gradually shift from exploration to exploitation.
+Network Architecture:
+
+You can define the architecture of the neural network (e.g., number of layers and units per layer). A typical architecture may include convolutional layers followed by fully connected layers.
+Entropy Coefficient:
+
+Encourages exploration by adding a penalty to the loss function based on the entropy of the policy. This helps to avoid premature convergence to a suboptimal policy.
+Number of Training Episodes:
+
+The total number of episodes for which the model will be trained. This directly affects training time and performance.
