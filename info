@@ -398,5 +398,19 @@ This ensures that any differences above 180° are correctly adjusted, so the max
 
 
 
+Action Spaces in AWS DeepRacer
+In AWS DeepRacer, there are two types of action spaces supported: discrete and continuous.
 
-Cha
+Discrete Action Space
+The discrete action space allows for a finite set of actions from which the agent can choose. This space enables selecting specific angles and speeds, usually defined by a pre-set number of actions (up to a maximum of 20). This simplifies the decision-making process for the model and can lead to faster training times because the model learns from a limited set of actions. 
+Advantage: Easy to implement and understand. It is suitable for simpler racing environments where defining fixed actions is sufficient.
+
+Limitation: Some actions may become unused or irrelevant as the model gains experience, particularly in asymmetric tracks that favor certain maneuvers.
+
+Continuous Action Space
+In contrast, the continuous action space provides a range of possible actions, allowing for more nuanced control over steering angles and speeds. This involves setting minimum and maximum limits for steering and speeds, which can then be varied during training.
+Advantage: Offers flexibility and potentially more precise control. It is especially beneficial for complex tracks where smooth maneuvering is essential for optimizing performance.
+
+Limitation: More difficult to manage and may require more sophisticated algorithms for effective learning.
+
+Conclusion
