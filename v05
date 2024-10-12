@@ -1,0 +1,146 @@
+import math
+
+def reward_function(params):
+    # Read input variables
+    waypoints = params['waypoints']
+    closest_waypoints = params['closest_waypoints']
+    heading = params['heading']
+    all_wheels_on_track = params['all_wheels_on_track']
+    speed = params['speed']
+    track_width = params['track_width']
+    distance_from_center = params['distance_from_center']
+    is_reversed = params['is_reversed']
+    steering = abs(params['steering_angle'])
+    progress = params['progress']
+    
+    # Initialize the reward with a typical value
+    reward = 1.0
+    
+    ### 1. Off-Track Penalty ###
+    if not all_wheels_on_track:
+        return 1e-4  # Minimum reward to discourage going off track
+    
+    ### 2. Reversed Movement Penalty ###
+    if is_reversed:
+        reward *= 0.2  # Strong penalty for reverse driving
+    
+    ### 3. Distance from Centerline ###
+    # Calculate how far the car is from the center of the track
+    distance_ratio = distance_from_center / (track_width / 2)
+    
+    # Penalize if the car is too far from the center
+    if distance_ratio > 0.5:
+        reward *= 0.5
+    elif distance_ratio > 0.25:
+        reward *= 0.8
+    else:
+        reward *= 1.2  # Small reward for staying near the center
+    
+    ### 4. Direction Alignment ###
+    # Calculate the direction of the center line based on closest waypoints
+    next_point = waypoints[closest_waypoints[1]]
+    prev_point = waypoints[closest_waypoints[0]]
+    
+    # Calculate the track direction in radians using atan2(dy, dx)
+    track_direction = math.atan2(next_point[1] - prev_point[1], next_point[0] - prev_point[0])
+    track_direction = math.degrees(track_direction)
+    
+    # Calculate the difference between the track direction and the car's heading
+    direction_diff = abs(track_direction - heading)
+    if direction_diff > 180:
+        direction_diff = 360 - direction_diff
+    
+    # Penalize the reward if the direction difference is too large
+    DIRECTION_THRESHOLD = 10.0
+    if direction_diff > DIRECTION_THRESHOLD:
+        reward *= 0.7  # Moderate penalty
+    else:
+        reward *= 1.1  # Small reward for good alignment
+    
+    ### 5. Speed Control Based on Curvature ###
+    curvature = calculate_curvature(waypoints, closest_waypoints)
+    
+    # Define a base speed threshold
+    BASE_SPEED_THRESHOLD = 5.0  # meters per second
+    
+    # Adjust speed threshold based on curvature
+    # Higher curvature (sharper turn) requires lower speed
+    if curvature > 0.15:
+        speed_threshold = BASE_SPEED_THRESHOLD * 0.4  # Reduce speed significantly on sharp turns
+    elif curvature > 0.05:
+        speed_threshold = BASE_SPEED_THRESHOLD * 0.7  # Moderate speed on gentle turns
+    else:
+        speed_threshold = BASE_SPEED_THRESHOLD  # Full speed on straight sections
+    
+    # Reward for speed: higher speed closer to threshold
+    speed_reward = min(speed / speed_threshold, 1.0)
+    reward *= speed_reward
+    
+    ### 6. Steering Penalty ###
+    # Define steering threshold
+    STEERING_THRESHOLD = 15.0  # degrees
+    
+    if steering > STEERING_THRESHOLD:
+        reward *= 0.8  # Penalty for sharp steering
+    else:
+        reward *= 1.1  # Small reward for gentle steering
+    
+    ### 7. Progress Reward ###
+    # Encourage efficient progress
+    if progress > 0:
+        progress_reward = progress / 100.0  # Normalize progress to [0,1]
+        reward += progress_reward
+    
+    return float(reward)
+
+def calculate_curvature(waypoints, closest_waypoints):
+    # Get previous, current, and next waypoints
+    prev_point = waypoints[closest_waypoints[0]]
+    current_point = waypoints[closest_waypoints[1]]
+    
+    if closest_waypoints[1] < len(waypoints) - 1:
+        next_point = waypoints[closest_waypoints[1] + 1]
+    else:
+        next_point = waypoints[0]  # Wrap around if at the last waypoint
+    
+    # Calculate vectors between waypoints
+    vec1 = (current_point[0] - prev_point[0], current_point[1] - prev_point[1])
+    vec2 = (next_point[0] - current_point[0], next_point[1] - current_point[1])
+    
+    # Calculate the angle between the vectors
+    dot_product = vec1[0] * vec2[0] + vec1[1] * vec2[1]
+    magnitude1 = math.sqrt(vec1[0]**2 + vec1[1]**2)
+    magnitude2 = math.sqrt(vec2[0]**2 + vec2[1]**2)
+    
+    # Avoid division by zero and handle invalid angles
+    if magnitude1 == 0 or magnitude2 == 0:
+        return 0.0
+    
+    # Clamp the cosine value to the valid range to avoid math domain errors
+    cos_angle = max(min(dot_product / (magnitude1 * magnitude2), 1.0), -1.0)
+    angle = math.acos(cos_angle)
+    
+    # Calculate curvature as the change in direction normalized
+    curvature = angle / math.pi  # Normalize to [0,1]
+    return curvature
+
+def distance(p1, p2):
+    dx = p2[0] - p1[0]
+    dy = p2[1] - p1[1]
+    return math.sqrt(dx**2 + dy**2)
+
+def calculate_angle(p1, p2, p3):
+    v1 = (p2[0] - p1[0], p2[1] - p1[1])
+    v2 = (p3[0] - p2[0], p3[1] - p2[1])
+    
+    dot_product = v1[0] * v2[0] + v1[1] * v2[1]
+    mag_v1 = math.sqrt(v1[0]**2 + v1[1]**2)
+    mag_v2 = math.sqrt(v2[0]**2 + v2[1]**2)
+    
+    if mag_v1 == 0 or mag_v2 == 0:
+        return 0.0
+    
+    # Clamp the cosine value to avoid math domain errors
+    cos_angle = max(min(dot_product / (mag_v1 * mag_v2), 1.0), -1.0)
+    angle = math.acos(cos_angle)
+    return angle
