@@ -1,0 +1,99 @@
+import math
+
+def reward_function(params):
+    # Read input variables
+    waypoints = params['waypoints']
+    closest_waypoints = params['closest_waypoints']
+    heading = params['heading']
+    all_wheels_on_track = params['all_wheels_on_track']
+    speed = params['speed']
+    is_reversed = params['is_reversed']
+    progress = params['progress']
+
+    # Initialize the reward with a typical value
+    reward = 1.0
+
+    # Penalize if the car is off track
+    if not all_wheels_on_track:
+        return 1e-3  # Minimum reward if off track
+
+    # Penalize if driving backward (reversed)
+    if is_reversed:
+        reward *= 0.1  # Stronger penalty for reversing
+
+    # Calculate the direction of the center line based on closest waypoints
+    next_point = waypoints[closest_waypoints[1]]
+    prev_point = waypoints[closest_waypoints[0]]
+
+    # Calculate the direction in radians using atan2(dy, dx)
+    track_direction = math.atan2(next_point[1] - prev_point[1], next_point[0] - prev_point[0])
+    track_direction = math.degrees(track_direction)
+
+    # Calculate the difference between the track direction and the car's heading
+    direction_diff = abs(track_direction - heading)
+    if direction_diff > 180:
+        direction_diff = 360 - direction_diff
+
+    # Penalize if the direction difference is too large
+    DIRECTION_THRESHOLD = 15.0
+    if direction_diff > DIRECTION_THRESHOLD:
+        reward *= 0.5  # Penalize for poor alignment
+
+    # Calculate curvature of the track
+    curvature = calculate_curvature(waypoints, closest_waypoints)
+
+    # Encourage max speed on straight lines and safe speed on curves
+    IDEAL_SPEED = 3.5  # Target speed for straight lines
+    MAX_CURVE_SPEED = 2.0  # Maximum safe speed on curves
+
+    if curvature > 0.1:  # Sharp curve detected
+        if speed > MAX_CURVE_SPEED:
+            reward *= 0.7  # Penalize for going too fast on curves
+        else:
+            reward *= 1.2  # Reward for keeping speed within safe limits on curves
+    else:  # On straights
+        if speed >= IDEAL_SPEED:
+            reward *= 1.5  # Reward for maintaining high speed on straights
+        else:
+            reward *= 0.8  # Penalize for being too slow on straights
+
+    # Encourage minimum speed to avoid going too slow
+    MIN_SPEED_THRESHOLD = 1.5
+    if speed < MIN_SPEED_THRESHOLD:
+        reward *= 0.5  # Penalize for being too slow
+
+    # Add progress reward to encourage completing the track
+    reward += progress * 0.3  # Reward based on progress
+
+    return float(reward)
+
+def calculate_curvature(waypoints, closest_waypoints):
+    # Use a wider range of waypoints to detect upcoming curves
+    if closest_waypoints[1] < len(waypoints) - 2:
+        p1 = waypoints[closest_waypoints[0]]
+        p2 = waypoints[closest_waypoints[1]]
+        p3 = waypoints[closest_waypoints[1] + 1]
+
+        # Calculate vectors between the points
+        v1 = (p2[0] - p1[0], p2[1] - p1[1])
+        v2 = (p3[0] - p2[0], p3[1] - p2[1])
+
+        # Calculate the dot product and magnitude
+        dot_product = v1[0] * v2[0] + v1[1] * v2[1]
+        mag_v1 = math.sqrt(v1[0] ** 2 + v1[1] ** 2)
+        mag_v2 = math.sqrt(v2[0] ** 2 + v2[1] ** 2)
+
+        # Avoid division by zero and check for straight lines
+        if mag_v1 == 0 or mag_v2 == 0:
+            return 0.0  # No curvature for a straight line
+
+        # Calculate the angle between the vectors
+        angle = math.acos(dot_product / (mag_v1 * mag_v2))
+
+        # Normalize the curvature (larger value means sharper turn)
+        curvature = 1.0 / angle if angle != 0 else 0.0
+
+        # Scale the curvature for better handling of sharp curves
+        curvature = min(curvature, 1.0)  # Cap the maximum curvature value
+        return curvature
+    return 0.0
