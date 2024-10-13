@@ -60,12 +60,11 @@ def reward_function(params):
     reward += progress * 0.2  # Reward for making progress
 
     # Additional off-track penalty based on distance from track
-    distance_from_track = calculate_distance_from_track(params)
+    distance_from_track = calculate_distance_from_track(params, waypoints)
     OFF_TRACK_PENALTY = 0.5
     reward *= (1 - OFF_TRACK_PENALTY * distance_from_track)
 
     return float(reward)
-
 
 def calculate_curvature(waypoints, closest_waypoints, num_points=5):
     # Ensure we have enough waypoints to calculate curvature
@@ -102,8 +101,7 @@ def calculate_curvature(waypoints, closest_waypoints, num_points=5):
     # Average curvature over all sampled points
     return curvature / (len(relevant_points) - 2)
 
-
-def calculate_distance_from_track(params):
+def calculate_distance_from_track(params, waypoints):
     # Calculate the distance between the car's position and the closest point on the track
     car_position = params['x'], params['y']
     closest_point = params['closest_waypoints']
