@@ -1,0 +1,91 @@
+import math
+
+def reward_function(params):
+    # Read input variables
+    waypoints = params['waypoints']
+    closest_waypoints = params['closest_waypoints']
+    heading = params['heading']
+    all_wheels_on_track = params['all_wheels_on_track']
+    speed = params['speed']
+    is_reversed = params['is_reversed']
+    track_width = params['track_width']
+    distance_from_center = params['distance_from_center']
+    
+    # Initialize the reward with a baseline value
+    reward = 1.0
+
+    # Penalize if the car is off track
+    if not all_wheels_on_track:
+        return 1e-3  # Minimum reward if off track
+
+    # Penalize if driving backward
+    if is_reversed:
+        return 1e-3  # Strong penalty for reversing
+
+    # Calculate the direction of the track based on waypoints
+    next_point = waypoints[closest_waypoints[1]]
+    prev_point = waypoints[closest_waypoints[0]]
+
+    # Calculate the direction in radians
+    track_direction = math.atan2(next_point[1] - prev_point[1], next_point[0] - prev_point[0])
+    track_direction = math.degrees(track_direction)
+
+    # Calculate the difference between the track direction and the car's heading
+    direction_diff = abs(track_direction - heading)
+    if direction_diff > 180:
+        direction_diff = 360 - direction_diff
+
+    # Fine-tuned direction alignment reward
+    DIRECTION_THRESHOLD = 10.0  # Tighter threshold for direction alignment
+    if direction_diff < DIRECTION_THRESHOLD:
+        reward *= (1.0 + (1 - direction_diff / DIRECTION_THRESHOLD))  # Reward for better alignment
+    else:
+        reward *= 0.8  # Penalty for larger misalignment
+
+    # Calculate the distance from the track center
+    if distance_from_center <= track_width / 2:
+        reward *= 1.2  # Mild reward for being near the center
+    else:
+        reward *= 0.5  # Strong penalty for being far from the center
+
+    # Reward for speed
+    TARGET_SPEED = 3.0  # Set a target speed
+    if speed > TARGET_SPEED:
+        reward *= 0.8  # Penalize for overspeeding
+    elif speed == TARGET_SPEED:
+        reward *= 1.5  # Reward for achieving target speed
+    else:
+        reward *= 1.0  # Neutral reward for below target speed
+
+    # Handle curves more effectively
+    curvature = calculate_curvature(waypoints, closest_waypoints)
+    CURVATURE_THRESHOLD = 0.5  # Adjust threshold for curvature
+
+    if curvature > CURVATURE_THRESHOLD:  # Adjusting for sharp curves
+        reward *= 0.5  # Strong penalty for sharp curves, encourage slow down
+    else:
+        reward *= 1.2  # Reward for smooth navigation
+
+    return float(reward)
+
+def calculate_curvature(waypoints, closest_waypoints):
+    # Calculate the curvature based on the next and previous waypoints
+    next_point = waypoints[closest_waypoints[1]]
+    prev_point = waypoints[closest_waypoints[0]]
+    
+    # Calculate the direction vector
+    direction = (next_point[0] - prev_point[0], next_point[1] - prev_point[1])
+    
+    # Calculate the length of the direction vector
+    length = math.sqrt(direction[0]**2 + direction[1]**2)
+
+    # If length is zero, return 0 curvature to avoid division by zero
+    if length == 0:
+        return 0.0
+
+    # Calculate the angle of the track
+    angle = math.degrees(math.atan2(direction[1], direction[0]))
+
+    # Return curvature as an absolute value
+    return abs(angle) / 180.0  # Normalize to [0, 1] range
+
