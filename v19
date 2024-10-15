@@ -1,0 +1,109 @@
+import math
+
+def reward_function(params):
+    # Extract necessary input parameters
+    all_wheels_on_track = params['all_wheels_on_track']
+    distance_from_center = params['distance_from_center']
+    track_width = params['track_width']
+    progress = params['progress']
+    speed = params['speed']
+    steering_angle = abs(params['steering_angle'])
+    closest_waypoints = params['closest_waypoints']
+    waypoints = params['waypoints']
+    heading = params['heading']
+    
+    # Initialize reward
+    reward = 1.0
+
+    # Penalty for going off-track
+    if not all_wheels_on_track:
+        return 1e-3  # Minimum reward if the car is off-track
+
+    # Continuous reward for staying close to the center
+    distance_from_center_ratio = distance_from_center / (track_width / 2)
+    reward += max(0.0, 1.0 - distance_from_center_ratio)
+
+    # Short-term waypoints to handle immediate sharp turns (2 waypoints ahead)
+    next_waypoint = waypoints[closest_waypoints[1]]
+    future_waypoint_short_idx = (closest_waypoints[1] + 2) % len(waypoints)
+    future_waypoint_short = waypoints[future_waypoint_short_idx]
+    
+    # Medium-term waypoints to handle mid-range curves (5 waypoints ahead)
+    future_waypoint_medium_idx = (closest_waypoints[1] + 5) % len(waypoints)
+    future_waypoint_medium = waypoints[future_waypoint_medium_idx]
+    
+    # Long-term waypoints to handle future track adjustments (10 waypoints ahead)
+    future_waypoint_long_idx = (closest_waypoints[1] + 10) % len(waypoints)
+    future_waypoint_long = waypoints[future_waypoint_long_idx]
+    
+    # Calculate the direction using short-term waypoints
+    short_term_direction = math.atan2(
+        future_waypoint_short[1] - next_waypoint[1],
+        future_waypoint_short[0] - next_waypoint[0]
+    )
+    short_term_direction = math.degrees(short_term_direction)  # Convert to degrees
+    
+    # Calculate the direction using medium-term waypoints
+    medium_term_direction = math.atan2(
+        future_waypoint_medium[1] - next_waypoint[1],
+        future_waypoint_medium[0] - next_waypoint[0]
+    )
+    medium_term_direction = math.degrees(medium_term_direction)  # Convert to degrees
+
+    # Calculate the direction using long-term waypoints
+    long_term_direction = math.atan2(
+        future_waypoint_long[1] - next_waypoint[1],
+        future_waypoint_long[0] - next_waypoint[0]
+    )
+    long_term_direction = math.degrees(long_term_direction)  # Convert to degrees
+    
+    # Calculate the difference between the car's heading and the short-term direction
+    short_term_diff = abs(short_term_direction - heading)
+    if short_term_diff > 180:
+        short_term_diff = 360 - short_term_diff
+
+    # Calculate the difference between the car's heading and the medium-term direction
+    medium_term_diff = abs(medium_term_direction - heading)
+    if medium_term_diff > 180:
+        medium_term_diff = 360 - medium_term_diff
+
+    # Calculate the difference between the car's heading and the long-term direction
+    long_term_diff = abs(long_term_direction - heading)
+    if long_term_diff > 180:
+        long_term_diff = 360 - long_term_diff
+
+    # Speed-based rewards
+    if short_term_diff < 10:  # Straight or slight curve
+        if speed > 2.5:  # High-speed reward for straights
+            reward += 2.0
+        elif speed > 2.0:
+            reward += 1.5
+        else:
+            reward += 0.5  # Minimal reward for lower speeds
+    
+    elif short_term_diff < 30:  # Mild turn
+        if speed > 2.0:
+            reward += 1.0  # Reward for decent speed in mild turns
+        else:
+            reward += 0.5  # Lower reward for slower speed
+
+    else:  # Sharp turns
+        if speed > 1.5:
+            reward *= 0.7  # Penalize high speed in sharp turns
+        else:
+            reward += 0.3  # Encourage slowing down in sharp turns
+
+    # Reward for accelerating after sharp turns
+    if medium_term_diff < 20 and short_term_diff > 30:  # Exiting a sharp turn into a milder turn
+        if speed > 2.0:
+            reward += 1.0  # Reward for quickly accelerating after turns
+    
+    # Penalty for excessive steering angle in straight sections
+    if short_term_diff < 10 and steering_angle > 15:
+        reward *= 0.8  # Penalize harsh steering on straight sections
+
+    # Progress-based reward
+    reward += (progress / 100)
+
+    # Ensure the reward is a positive number
+    return float(reward)
