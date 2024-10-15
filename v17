@@ -1,0 +1,143 @@
+import math
+
+def reward_function(params):
+    # Read input variables
+    waypoints = params['waypoints']
+    closest_waypoints = params['closest_waypoints']
+    heading = params['heading']
+    all_wheels_on_track = params['all_wheels_on_track']
+    speed = params['speed']
+    is_reversed = params['is_reversed']
+    progress = params['progress']
+    track_width = params['track_width']
+    distance_from_center = params['distance_from_center']
+
+    # Initialize the reward with a typical value
+    reward = 1.0
+
+    # Penalize if the car is off track
+    if not all_wheels_on_track:
+        return 1e-3  # Minimum reward if off track
+
+    # Penalize if driving backward (reversed)
+    if is_reversed:
+        return 1e-3  # Stronger penalty for reversing
+
+    # Calculate the direction of the center line based on closest waypoints
+    next_point = waypoints[closest_waypoints[1]]
+    prev_point = waypoints[closest_waypoints[0]]
+
+    # Calculate the direction in radians using atan2(dy, dx)
+    track_direction = math.atan2(next_point[1] - prev_point[1], next_point[0] - prev_point[0])
+    track_direction = math.degrees(track_direction)
+
+    # Calculate the difference between the track direction and the car's heading
+    direction_diff = abs(track_direction - heading)
+    if direction_diff > 180:
+        direction_diff = 360 - direction_diff
+
+    # Fine-tuned direction alignment penalty
+    DIRECTION_THRESHOLD = 15.0
+    if direction_diff < DIRECTION_THRESHOLD:
+        reward *= (1.0 + (1 - direction_diff / DIRECTION_THRESHOLD))  # Smooth reward for better alignment
+    else:
+        reward *= 0.8  # Minor penalty for larger misalignment
+
+    # Calculate curvature based on multiple waypoints
+    curvature = calculate_smooth_curvature(waypoints, closest_waypoints, num_points=5)
+
+    # Dynamic speed adjustment based on curvature
+    MAX_SPEED = 4.0  # Target higher max speed
+    MAX_CURVE_SPEED = 2.5  # Increase allowed speed for sharp turns
+
+    if curvature > 0.3:  # Sharp curve
+        optimal_speed = MAX_CURVE_SPEED / curvature  # Dynamic speed limit
+        if speed > optimal_speed:
+            reward *= 0.6  # Penalize for overspeeding in sharp turns
+        else:
+            reward *= 1.4  # Reward for staying within optimal speed in turns
+    else:  # Straight section
+        TARGET_SPEED = 3.0  # Adjust based on track
+        if abs(speed - TARGET_SPEED) < 0.5:
+            reward *= 1.3  # Reward for staying near target speed on straights
+        elif speed >= MAX_SPEED:
+            reward *= 1.3  # Reward for higher speed on straight sections
+        elif speed < 1.0:  # Penalty for low speed on straights
+            reward *= 0.8  # Penalize for lower speed
+
+    # Lane handling logic (Encouraging opposite lane in curves)
+    curve_direction = track_direction - heading
+    if curve_direction > 180:
+        curve_direction -= 360
+    elif curve_direction < -180:
+        curve_direction += 360
+
+    if abs(curve_direction) > 5:  # Only apply when the curve is significant
+        if curve_direction > 0:  # Right curve
+            if distance_from_center < track_width * 0.4:  # Car is closer to the left side
+                reward *= 1.1  # Light reward for staying left in right curve
+            else:
+                reward *= 0.9  # Light penalty for staying right in right curve
+        else:  # Left curve
+            if distance_from_center > track_width * 0.6:  # Car is closer to the right side
+                reward *= 1.1  # Light reward for staying right in left curve
+            else:
+                reward *= 0.9  # Light penalty for staying left in left curve
+
+    # Fine-tuned center positioning reward
+    if distance_from_center <= 0.1 * track_width:
+        reward *= 1.5  # Strong reward for being near the center
+    elif distance_from_center <= 0.3 * track_width:
+        reward *= 1.2  # Mild reward for staying closer to center
+    else:
+        reward *= 0.7  # Penalize for being far from the center
+
+    # Progress-based rewards
+    if progress > 90:  # High progress gives extra rewards
+        reward *= 1.5
+    elif progress > 50:
+        reward *= 1.2
+
+    # Reduce off-track penalty to be more forgiving
+    distance_from_track = calculate_distance_from_track(params, waypoints)
+    OFF_TRACK_PENALTY = 0.3  # Lower off-track penalty
+    reward *= (1 - OFF_TRACK_PENALTY * min(distance_from_track, track_width * 0.5))
+
+    return float(reward)
+
+def calculate_smooth_curvature(waypoints, closest_waypoints, num_points=5):
+    total_waypoints = len(waypoints)
+    start_index = max(closest_waypoints[0] - num_points // 2, 0)
+    end_index = min(closest_waypoints[1] + num_points // 2, total_waypoints - 1)
+
+    relevant_points = waypoints[start_index:end_index + 1]
+
+    if len(relevant_points) < 3:
+        return 0.0
+
+    curvature = 0.0
+    for i in range(len(relevant_points) - 2):
+        p1 = relevant_points[i]
+        p2 = relevant_points[i + 1]
+        p3 = relevant_points[i + 2]
+
+        v1 = (p2[0] - p1[0], p2[1] - p1[1])
+        v2 = (p3[0] - p2[0], p3[1] - p2[1])
+
+        dot_product = v1[0] * v2[0] + v1[1] * v2[1]
+        mag_v1 = math.sqrt(v1[0] ** 2 + v1[1] ** 2)
+        mag_v2 = math.sqrt(v2[0] ** 2 + v2[1] ** 2)
+
+        if mag_v1 > 0 and mag_v2 > 0:
+            angle = math.acos(dot_product / (mag_v1 * mag_v2))
+            curvature += min(1.0 / angle, 5.0) if angle != 0 else 0.0  # Limit curvature to avoid extreme values
+
+    # Normalize curvature and smooth the transition
+    return curvature / (len(relevant_points) - 2)
+
+def calculate_distance_from_track(params, waypoints):
+    car_position = params['x'], params['y']
+    closest_point = params['closest_waypoints']
+    track_point = waypoints[closest_point[0]]
+    distance = math.sqrt((car_position[0] - track_point[0])**2 + (car_position[1] - track_point[1])**2)
+    return distance
