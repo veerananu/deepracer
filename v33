@@ -1,0 +1,100 @@
+import math
+
+def reward_function(params):
+    # Extract necessary input parameters
+    all_wheels_on_track = params['all_wheels_on_track']
+    distance_from_center = params['distance_from_center']
+    track_width = params['track_width']
+    speed = params['speed']
+    steering_angle = abs(params['steering_angle'])
+    closest_waypoints = params['closest_waypoints']
+    waypoints = params['waypoints']
+    heading = params['heading']
+    is_reversed = params['is_reversed']
+
+    # Initialize the reward
+    reward = 1.0
+
+    # Penalize if the car is off the track or reversing
+    if not all_wheels_on_track or is_reversed:
+        return 1e-4  # Harsh penalty for going off track or reversing
+
+    # Reward for staying on track
+    reward += 0.1  # Small reward for each step on track
+
+    # Reward based on distance from center
+    distance_from_center_ratio = distance_from_center / (track_width / 2)
+    reward += max(0.0, 2.0 - distance_from_center_ratio * 2)  # Higher weight for staying near the center
+
+    # Focus on closest and next waypoint to adjust driving behavior
+    next_waypoint = waypoints[closest_waypoints[1]]
+    future_waypoint_short_idx = (closest_waypoints[1] + 1) % len(waypoints)  # Next closest waypoint
+    future_waypoint_short = waypoints[future_waypoint_short_idx]
+
+    # Calculate direction to the next waypoints (closest and next)
+    short_term_direction = math.atan2(
+        future_waypoint_short[1] - next_waypoint[1],
+        future_waypoint_short[0] - next_waypoint[0]
+    )
+
+    # Calculate the tangent to the track at the closest waypoint
+    previous_waypoint = waypoints[closest_waypoints[0]]
+    track_tangent = math.atan2(
+        next_waypoint[1] - previous_waypoint[1],
+        next_waypoint[0] - previous_waypoint[0]
+    )
+
+    # Convert directions to degrees
+    short_term_direction = math.degrees(short_term_direction)
+    track_tangent = math.degrees(track_tangent)
+
+    # Calculate the differences between the car's heading and the directions
+    short_term_diff = abs(short_term_direction - heading)
+    heading_alignment_diff = abs(track_tangent - heading)
+
+    # Normalize the differences to be within [0, 180]
+    short_term_diff = min(short_term_diff, 360 - short_term_diff)
+    heading_alignment_diff = min(heading_alignment_diff, 360 - heading_alignment_diff)
+
+    # Threshold adjustment to detect straights vs curves more precisely
+    STRAIGHT_THRESHOLD = 3  # Lowered threshold for straight sections
+    MEDIUM_TURN_THRESHOLD = 10  # Lowered threshold for curves
+
+    # Speed reward logic based on track shape
+    if short_term_diff < STRAIGHT_THRESHOLD:
+        # Straight road detected, reward higher speed
+        if speed > 3.0:
+            reward += 2.0
+        elif speed > 2.0:
+            reward += 1.5
+        else:
+            reward += 1.0  # Reward for moderate speed on straights
+    elif short_term_diff < MEDIUM_TURN_THRESHOLD:
+        # Gentle turn detected, moderate speed
+        if speed > 2.5:
+            reward += 1.0  # Encourage maintaining speed through mild turns
+        else:
+            reward += 0.5  # Encourage gradual speed increase
+    else:
+        # Sharp turn detected, slow down
+        if speed > 2.0:
+            reward *= 0.5  # Penalize excessive speed in sharp turns
+        else:
+            reward += 0.3  # Reward for slowing down
+
+    # Penalty for high steering angles (oversteering) on straights and curves
+    if short_term_diff < STRAIGHT_THRESHOLD and steering_angle > 10:
+        reward *= 0.5  # Penalize sharp turns on straights
+    elif short_term_diff >= STRAIGHT_THRESHOLD and steering_angle > 15:
+        reward *= 0.3  # Stronger penalty for sharp turns on curves
+
+    # Penalty for rapid steering changes
+    if steering_angle > 14:
+        reward *= 0.8  # Penalize rapid changes in steering angle
+
+    # Reward for better heading alignment with the track's direction
+    if heading_alignment_diff < 5:  # Adjust threshold as needed
+        reward += 1.0
+
+    # Ensure reward is positive
+    return float(reward)
