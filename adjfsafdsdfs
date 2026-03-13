@@ -1,0 +1,319 @@
+flowchart TD
+    Start_Launcher --> Fetch_Destination
+    Fetch_Destination["Fetch Destination"]
+    Fetch_Destination -->|"route_intent"| dest_transfer_type
+    Fetch_Destination -->|"dest_auth_required"| dest_auth_required
+    Fetch_Destination -->|"dest_payload"| dest_payload
+    Fetch_Destination -->|"dest_id"| dest_id
+    Fetch_Destination -->|"dest_name"| dest_name
+    Fetch_Destination -->|"dest_desc"| dest_desc
+    Fetch_Destination -->|"dest_hoops_name"| dest_hoops_name
+    Fetch_Destination -->|"auth_failed"| auth_failed
+
+    Fetch_Destination -->|"auth_failed"| Get_Member_Subscriber_Flags
+    Get_Member_Subscriber_Flags["Get Member or Subscriber Flags"]
+    Personalization["Personalization"]
+    Update_Phone_Number["Update Phone Number"]
+    Invoke_Router["Invoke Router"]
+
+    %% Authentication Decision
+    Fetch_Destination -->|"Authentication Required"| Authentication_Required{"Authentication Required?"}
+    Authentication_Required -->|"No"| Update_Phone_Number
+    Authentication_Required -->|"Yes"| Already_Authenticated{“Already Authenticated?”}
+
+    Already_Authenticated -->|"Yes"| Update_Phone_Number
+    Already_Authenticated -->|"No"| Authenticate_Caller["Authenticate Caller"]
+
+    %% Authentication Validation
+    Authenticate_Caller --> Authentication_Successful{"Authentication Successful?"}
+    Authentication_Successful -->|"Yes"| Update_Phone_Number
+    Authentication_Successful -->|"No"| auth_failed
+    auth_failed --> return_to_launcher_or_fallback["Return to Launcher or Fallback"]
+
+    %% Invoke Router Decision
+    Update_Phone_Number --> Invoke_Router["Invoke Router"]
+    Update_Phone_Number -->|"upph_return_reason"| upph_return_reason
+
+    %% Invoke Router Flow
+    Invoke_Router --> Launch_Destination["Launch Destination (Reporting)"]
+    Launch_Destination --> Routing_Service["Routing Service"]
+    Routing_Service -->|"Routing Payload"| Call_State_Pub["Call State Pub"]
+    Call_State_Pub -->|"Publish Event"| Publish_Event["Publish Event"]
+
+
+
+
+
+
+
+
+
+
+
+End-to-end flow
+ Start the launcher flow
+
+The flow starts in the main launcher flow.
+
+It uses these input variables:
+route_intent
+route_user_role
+route_req_msr
+auth_failed
+
+These inputs are used to decide where the caller should go.
+
+2. Fetch Destination
+
+The flow calls the Fetch Destination module.
+
+This module:
+clears old destination attributes
+calls the Destination Lookup Lambda
+returns destination details
+
+Inputs:
+route_intent
+route_user_role
+route_req_msr
+auth_failed
+
+Outputs:
+dest_transfer_type
+dest_auth_required
+dest_payload
+dest_id
+dest_name
+dest_desc
+dest_hoops_name
+
+This step decides:
+what destination to use
+whether authentication is required
+what routing payload should be used
+
+3. Check whether authentication is required
+
+After Fetch Destination, the flow checks:
+dest_auth_required == true
+
+If authentication is not required:
+continue to the next step
+
+If authentication is required:
+go to the authentication branch
+
+4. Check whether caller already passed MFA
+
+The flow checks whether the caller already completed authentication earlier.
+
+If already authenticated:
+continue
+
+If not authenticated:
+invoke the authentication module
+
+5. Authenticate caller
+
+The authentication module:
+asks for caller or member details
+validates identity
+sets authentication result values
+
+Possible results:
+
+If authentication succeeds:
+continue to the next stage
+
+If authentication fails:
+set auth_failed = true
+return to the launcher or fallback logic
+
+6. Get member or subscriber flags
+
+After successful authentication, the flow gets member or subscriber flags.
+
+Purpose:
+enrich caller context
+provide data needed for personalization
+
+7. Personalization
+
+The flow invokes the Personalization module.
+
+This step decides whether the current route should stay the same or change.
+
+Possible results:
+no change
+new route or new intent
+launch another specialized path
+
+8. Evaluate personalization result
+
+After personalization, the flow evaluates the result.
+
+Possible outcomes:
+continue with the current route
+switch to another intent or path
+
+9. Update Phone Number
+
+After personalization, the flow invokes the Update Phone Number module.
+
+10. Check what happened in Update Phone Number
+
+Immediately after Update Phone Number, the flow checks:
+upph_return_reason
+
+The check block asks:
+What happened in Update Phone module?
+
+There are 3 possible outcomes.
+
+11. If upph_return_reason = done
+
+Path:
+Update Phone Number
+check upph_return_reason
+done
+Invoke Router
+
+Meaning:
+the phone update completed successfully
+the flow goes directly to Invoke Router
+
+12. If upph_return_reason = not-applicable
+
+Path:
+Update Phone Number
+check upph_return_reason
+not-applicable
+MSAT Survey Offer
+Invoke Router
+
+Meaning:
+phone update does not apply
+the flow offers MSAT Survey
+then continues to Invoke Router
+
+13. If upph_return_reason = switch-intent
+
+Path:
+Update Phone Number
+check upph_return_reason
+switch-intent
+Intent Switch
+
+Meaning:
+the phone update step decided the intent should change
+the flow goes to Intent Switch instead of routing immediately
+
+14. Invoke Router
+
+The Invoke Router module starts at:
+Start Invoke Router
+
+Then it goes to:
+Launch Destination (Reporting)
+
+From Launch Destination (Reporting), two visible paths are shown.
+
+15. Routing path
+
+The flow goes from Launch Destination (Reporting) to Routing Service.
+
+Routing Service also receives input from Routing Payload.
+
+So this path is:
+Start Invoke Router
+Launch Destination (Reporting)
+Routing Service
+Routing Payload is passed into Routing Service
+
+16. Event publishing path
+
+From Launch Destination (Reporting), the flow also goes downward to:
+Publish Event
+Call State Pub
+
+So this path is:
+Launch Destination (Reporting)
+Publish Event
+Call State Pub
+
+17. Complete normal path
+
+The normal routing path is:
+
+Start Launcher
+Fetch Destination
+Check whether authentication is required
+Authenticate caller if needed
+Get member or subscriber flags
+Personalization
+Update Phone Number
+Check upph_return_reason
+if done, go to Invoke Router
+Launch Destination (Reporting)
+Routing Service using Routing Payload
+Publish Event
+Call State Pub
+
+18. Path when phone update is not applicable
+
+Start Launcher
+Fetch Destination
+Check whether authentication is required
+Authenticate caller if needed
+Get member or subscriber flags
+Personalization
+Update Phone Number
+Check upph_return_reason
+if not-applicable, go to MSAT Survey Offer
+then go to Invoke Router
+Launch Destination (Reporting)
+Routing Service using Routing Payload
+Publish Event
+Call State Pub
+
+19. Path when phone update switches intent
+
+Start Launcher
+Fetch Destination
+Check whether authentication is required
+Authenticate caller if needed
+Get member or subscriber flags
+Personalization
+Update Phone Number
+Check upph_return_reason
+if switch-intent, go to Intent Switch
+
+Compact plain text flow
+
+Start Launcher
+Fetch Destination
+Check auth required
+If needed, authenticate caller
+Get member flags
+Personalization
+Update Phone Number
+Check upph_return_reason
+
+If done:
+go to Invoke Router
+
+If not-applicable:
+go to MSAT Survey Offer
+then go to Invoke Router
+
+If switch-intent:
+go to Intent Switch
+
+Inside Invoke Router:
+Start Invoke Router
+Launch Destination (Reporting)
+send Routing Payload to Routing Service
+publish event
+send event to Call State Pub
+
+If you want, I can next rewrite this as very simple implementation steps for Amazon Connect contact flow blocks.
