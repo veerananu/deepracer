@@ -1,0 +1,192 @@
+package main
+
+import (
+	"github.com/aws/aws-sdk-go-v2/service/bedrockruntime"
+	"github.com/aws/aws-sdk-go-v2/service/dynamodb"
+)
+
+// appConfig holds all runtime configuration loaded from environment variables.
+type appConfig struct {
+	EntityDefTable      string
+	CollectionTable     string
+	ModelID             string
+	ConfidenceThreshold float64
+	BedrockRegion       string
+	PromptFile          string
+	PromptTemplate      string
+}
+
+// dependencies groups the AWS clients and config used across the Lambda.
+type dependencies struct {
+	dynamo  *dynamodb.Client
+	bedrock *bedrockruntime.Client
+	cfg     appConfig
+}
+
+// connectEvent is the payload sent by Amazon Connect.
+type connectEvent struct {
+	Details struct {
+		Parameters struct {
+			EnterpriseIntent string `json:"enterpriseIntent"`
+			ContactID        string `json:"ContactId"`
+		} `json:"Parameters"`
+		ContactData struct {
+			ContactID string `json:"ContactId"`
+		} `json:"ContactData"`
+	} `json:"Details"`
+}
+
+// entityDefinition represents a single entity record stored in DynamoDB.
+//
+// ValidationRuleType is used for OPEN entities to specify format validation.
+// Supported values:
+//
+//	AMOUNT      — numeric, > 0, <= 10,000,000
+//	DATE        — YYYY-MM-DD format
+//	PHONE       — 10 or 11 digits
+//	DIGITS_4    — exactly 4 digits (card last four, PIN)
+//	DIGITS_9    — exactly 9 digits (routing number)
+//	DIGITS_4_17 — 4 to 17 digits (account number)
+//	PERCENTAGE  — numeric 0–100
+//	YEAR        — integer year > 1990 and <= current year + 1
+//	FREE_TEXT   — no format check (any non-null value passes)
+type entityDefinition struct {
+	EntityName         string   `dynamodbav:"entityName"           json:"entityName"`
+	EntityType         string   `dynamodbav:"entityType"           json:"entityType"`
+	EntityDescription  string   `dynamodbav:"entityDescription"    json:"entityDescription"`
+	ExampleUtterances  []string `dynamodbav:"exampleUtterances"    json:"exampleUtterances"`
+	AllowedValues      []string `dynamodbav:"allowedValues"        json:"allowedValues"`
+	ValidationRuleType string   `dynamodbav:"validationRuleType"   json:"validationRuleType,omitempty"`
+}
+
+// entityDefinitionItem is the top-level DynamoDB item for IntentEntityDefinitions.
+type entityDefinitionItem struct {
+	Entities []entityDefinition `dynamodbav:"entities"`
+}
+
+// catalogEntry is the JSON shape sent inside the prompt to the LLM.
+type catalogEntry struct {
+	Name          string   `json:"name"`
+	Description   string   `json:"description"`
+	AllowedValues []string `json:"allowed_values"`
+	Utterances    []string `json:"utterances"`
+}
+
+// conversationTurn represents a single turn in the DynamoDB conversation record.
+type conversationTurn struct {
+	TurnNumber  any    `dynamodbav:"TurnNumber"`
+	Timestamp   string `dynamodbav:"Timestamp"`
+	UserInput   string `dynamodbav:"UserInput"`
+	BotResponse string `dynamodbav:"BotResponse"`
+	ProductID   string `dynamodbav:"ProductId"`
+	State       string `dynamodbav:"State"`
+	Trigger     string `dynamodbav:"Trigger"`
+	IntentID    string `dynamodbav:"IntentId"`
+}
+
+// collectionItem is the top-level DynamoDB item for CollectionConfig.
+type collectionItem struct {
+	ConversationTurns []conversationTurn `dynamodbav:"ConversationTurns"`
+	SelectedIntentID  string             `dynamodbav:"SelectedIntentId"`
+	Status            string             `dynamodbav:"Status"`
+}
+
+// extraction holds the LLM's output for a single entity.
+type extraction struct {
+	Value       any     `json:"value"`
+	Confidence  float64 `json:"confidence"`
+	WasExplicit *bool   `json:"wasExplicit,omitempty"`
+}
+
+// validatedResult holds post-validation entity data.
+type validatedResult struct {
+	Extracted map[string]*extraction
+	Missing   []string
+}
+
+
+package main
+
+import (
+	"context"
+	"log"
+	"strings"
+)
+
+func lambdaHandler(ctx context.Context, event connectEvent) (map[string]interface{}, error) {
+	log.Printf("LAMBDA START | contactId=%s intent=%s",
+		event.Details.ContactData.ContactID,
+		event.Details.Parameters.EnterpriseIntent,
+	)
+
+	if strings.TrimSpace(app.cfg.PromptTemplate) == "" {
+		response := errorResponse("PROMPT_FILE_MISSING",
+			"Prompt template not loaded. Ensure extraction_prompt.txt exists in Lambda package.")
+		printResponse(response)
+		return response, nil
+	}
+
+	enterpriseIntent := strings.TrimSpace(event.Details.Parameters.EnterpriseIntent)
+	// Prefer ContactId from flow parameters (allows test overrides); fall back to the live contact ID.
+	contactID := strings.TrimSpace(event.Details.Parameters.ContactID)
+	if contactID == "" {
+		contactID = strings.TrimSpace(event.Details.ContactData.ContactID)
+	}
+	if enterpriseIntent == "" || contactID == "" {
+		response := errorResponse("INVALID_EVENT",
+			"enterpriseIntent and ContactId are required")
+		printResponse(response)
+		return response, nil
+	}
+
+	transcript, err := extractTranscript(ctx, contactID)
+	if err != nil {
+		return handleError(err)
+	}
+	if transcript == "" {
+		response := map[string]interface{}{
+			"status":              "ERROR",
+			"reason_code":         "NO_TRANSCRIPT",
+			"disposition":         "TRANSFER_AGENT",
+			"error_message":       "No transcript found for contact",
+			"extraction_complete": "false",
+			"entities":            []entityOutput{},
+			"count":               0,
+		}
+		printResponse(response)
+		return response, nil
+	}
+
+	entityDefs, err := fetchEntityDefinitions(ctx, enterpriseIntent)
+	if err != nil {
+		return handleError(err)
+	}
+	if len(entityDefs) == 0 {
+		response := map[string]interface{}{
+			"status":              "COMPLETE",
+			"reason_code":         "NO_ENTITIES_REQUIRED",
+			"disposition":         "FULFILL",
+			"extraction_complete": "true",
+			"entities":            []entityOutput{},
+			"count":               0,
+		}
+		printResponse(response)
+		return response, nil
+	}
+
+	systemPrompt, userMessage, err := buildExtractionPrompt(app.cfg.PromptTemplate, entityDefs, transcript, enterpriseIntent)
+	if err != nil {
+		return handleError(err)
+	}
+
+	llmResponse, err := callBedrock(ctx, systemPrompt, userMessage)
+	if err != nil {
+		return handleError(err)
+	}
+
+	extracted := parseLLMResponse(llmResponse)
+	validated := validateExtractions(extracted, entityDefs, app.cfg.ConfidenceThreshold)
+	response := buildConnectResponse(validated, entityDefs, app.cfg.ModelID)
+	printResponse(response)
+	return response, nil
+}
