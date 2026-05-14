@@ -1,0 +1,47 @@
+Fix my AWS Lambda function written in Go. It's invoked by an Amazon Connect contact flow and needs to return entity extraction results.
+
+## Current (broken) response
+
+The Lambda currently returns `entities` as a stringified JSON array, which Amazon Connect cannot iterate over with the Loop block. CloudWatch shows:
+
+```json
+"ExternalResults": {
+    "entities": "[{\"name\":\"payoff_loan_type\",\"value\":\"Auto - Secured\",\"description\":\"...\"}, ...]",
+    "extraction_complete": "true"
+}
+```
+
+Notice the `\"` escape characters — that means `entities` is a string, not a real array.
+
+## Required response shape
+
+Amazon Connect's Lambda block is configured with `ResponseValidation: ResponseType=JSON`, so it supports nested arrays. The response must look like this (entities as a real JSON array, plus a new `count` field):
+
+```json
+{
+  "count": 4,
+  "entities": [
+    {"name": "payoff_loan_type", "value": "Auto - Secured", "description": "..."},
+    {"name": "payoff_loan_vehicle_make", "value": null, "description": "..."},
+    {"name": "payoff_loan_vehicle_model", "value": null, "description": "..."},
+    {"name": "payoff_loan_vehicle_year", "value": "2026", "description": "..."}
+  ],
+  "extraction_complete": "true"
+}
+```
+
+## What to fix
+
+1. **Find and remove** any `json.Marshal(...)` + `string(...)` conversion applied to the entities slice before adding it to the response. Also remove any `fmt.Sprintf("%v", ...)` doing the same thing. The entities slice should be passed directly into the response — `aws-lambda-go` will marshal the whole response for you.
+
+2. **Add a `count` field** to the response containing `len(entities)`.
+
+3. **Preserve null values.** The `value` field can be `nil` for missing entities, so use `interface{}` (or `*string`) for that field on the Entity struct so it marshals to `null` instead of `""`.
+
+4. Keep `extraction_complete` as the string `"true"` (don't change it to a boolean — the contact flow may compare it as a string).
+
+## Acceptance test
+
+After the fix, CloudWatch should show the response with no `\"` escapes inside `entities`, with a `count` field present, and with the Compare block in Connect (`$.LambdaInvocation.ResultData.count > 0`) evaluating to true.
+
+Please show me the diff or the full updated handler.
