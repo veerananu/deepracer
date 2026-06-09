@@ -1,0 +1,91 @@
+transfer_from_account -> string, trim, keep as text
+transfer_to_account   -> string, trim, keep as text
+transfer_amount       -> number/currency, "$1,200.50" -> "1200.50"
+transfer_date         -> date, normalize to YYYY-MM-DD, within 365 days
+loan_type             -> constrained allowed value
+vehicle_make          -> string
+vehicle_model         -> string
+vehicle_year          -> number, 4 digits, > 1990
+card_type             -> constrained: ATM or Debit
+zip_code              -> string, exactly 5 digits, keep leading zero
+
+
+missing entity -> skip
+null value -> skip
+extra entity not in schema -> ignore
+invalid value -> remove entity and entity_was_explicit
+valid value -> keep normalized value and entity_was_explicit
+
+
+string:
+- trim spaces
+- keep value as text
+
+number:
+- remove currency symbols/commas when rule is currency
+- validate numeric format
+- keep as string in final map
+
+date:
+- resolve natural language date to YYYY-MM-DD
+- reject past dates
+- reject dates beyond 365 days
+
+CONSTRAINED:
+- value must match allowed values
+- compare case-insensitively
+- output canonical allowed value
+
+zip_code:
+- treat as string
+- exactly 5 digits
+- keep leading zeros
+
+vehicle_year:
+- numeric
+- four digits
+
+
+Test Coverage
+
+Validation should be covered by tests for:
+
+- valid date resolution
+- rejected date removal
+- currency normalization
+- ZIP code leading zero preservation
+- constrained value matching
+- invalid constrained values
+- vehicle year validation
+- ignored extra Bedrock entities
+- skipped missing/null values
+
+
+## Entity Rules
+
+| Entity | Type | Data Type | Validation / Normalization |
+|---|---|---|---|
+| transfer_from_account | OPEN | string | Trim and keep as text |
+| transfer_to_account | OPEN | string | Trim and keep as text |
+| transfer_amount | OPEN | number | Currency allowed. `$1,200.50` becomes `1200.50` |
+| transfer_date | OPEN | date | Resolve to `YYYY-MM-DD`; must be within 365 days |
+| loan_type | CONSTRAINED | string | Must match allowed loan type |
+| vehicle_make | OPEN | string | Trim and keep as text |
+| vehicle_model | OPEN | string | Trim and keep as text |
+| vehicle_year | OPEN | number | Must be 4 digits and greater than 1990 |
+| card_type | CONSTRAINED | string | Must be `ATM` or `Debit` |
+| zip_code | CONSTRAINED | string | Must be exactly 5 digits; keep leading zeros |
+
+General Rules
+
+- Only entities defined in the schema are accepted.
+- Extra entities returned by Bedrock are ignored.
+- Missing entities are skipped.
+- Null or empty values are skipped.
+- Invalid values are removed.
+- If an entity is removed, its `_was_explicit` flag is also removed.
+- Valid values are normalized based on data type.
+
+currency:
+- belongs to number validation
+- "$1,200.50" -> "1200.50"
