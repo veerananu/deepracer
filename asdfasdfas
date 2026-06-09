@@ -1,0 +1,25 @@
+For the session storage library, we are following standard Go package structure.
+
+This is a small reusable library, not a full application, so we are keeping one package and splitting files by responsibility instead of creating many folders.
+
+Current structure:
+
+iva-session-storage/
+  types.go          Public types
+  writer.go         Main write/save workflow
+  dynamodb.go       DynamoDB request helpers
+  validation.go     Input validation
+  errors.go         Shared errors
+  writer_test.go    Writer tests
+  README.md
+  go.mod
+  go.sum
+
+When we add reader functionality, we will add:
+
+  reader.go
+  reader_test.go
+
+We are avoiding folders like service/, repository/, models/, and handlers/ because those are more suitable for large applications. In Go, every folder becomes a package, so adding folders too early creates unnecessary complexity.
+
+If the library grows significantly later, we can introduce an internal/ folder for private implementation details. For now, one package with clear file separation is simpler, readable, and maintainable.
