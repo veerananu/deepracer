@@ -1,0 +1,148 @@
+package sessionstorage
+
+import (
+	"context"
+	"errors"
+	"fmt"
+
+	"github.com/aws/aws-sdk-go-v2/aws"
+	"github.com/aws/aws-sdk-go-v2/feature/dynamodb/attributevalue"
+	"github.com/aws/aws-sdk-go-v2/service/dynamodb"
+	dynamodbtypes "github.com/aws/aws-sdk-go-v2/service/dynamodb/types"
+)
+
+// UpdateNestedMaps writes each mapName.entryKey value from input.Maps.
+func (c *Client) UpdateNestedMaps(ctx context.Context, input NestedMapUpdate) error {
+	if c == nil || c.update == nil {
+		return fmt.Errorf("session storage client is not configured")
+	}
+
+	for mapName, entries := range input.Maps {
+		if err := c.initNestedMap(ctx, input.SessionID, mapName); err != nil {
+			return err
+		}
+		for entryKey, value := range entries {
+			if err := c.setNestedMapEntry(ctx, input.SessionID, mapName, entryKey, value); err != nil {
+				return err
+			}
+		}
+	}
+	return nil
+}
+
+func (c *Client) initNestedMap(ctx context.Context, sessionID, mapName string) error {
+	_, err := c.update(ctx, &dynamodb.UpdateItemInput{
+		TableName: aws.String(c.tableName),
+		Key:       c.sessionKey(sessionID),
+		UpdateExpression: aws.String(
+			"SET #map = if_not_exists(#map, :empty)",
+		),
+		ConditionExpression: aws.String("attribute_exists(#pk)"),
+		ExpressionAttributeNames: map[string]string{
+			"#pk":  c.partitionKeyName,
+			"#map": mapName,
+		},
+		ExpressionAttributeValues: map[string]dynamodbtypes.AttributeValue{
+			":empty": &dynamodbtypes.AttributeValueMemberM{Value: map[string]dynamodbtypes.AttributeValue{}},
+		},
+	})
+	return mapUpdateError(err)
+}
+
+func (c *Client) setNestedMapEntry(ctx context.Context, sessionID, mapName, entryKey string, value any) error {
+	entryValue, err := attributevalue.Marshal(value)
+	if err != nil {
+		return fmt.Errorf("marshal nested map entry: %w", err)
+	}
+
+	_, err = c.update(ctx, &dynamodb.UpdateItemInput{
+		TableName: aws.String(c.tableName),
+		Key:       c.sessionKey(sessionID),
+		UpdateExpression: aws.String(
+			"SET #map.#entry = :entryValue",
+		),
+		ConditionExpression: aws.String("attribute_exists(#pk)"),
+		ExpressionAttributeNames: map[string]string{
+			"#pk":    c.partitionKeyName,
+			"#map":   mapName,
+			"#entry": entryKey,
+		},
+		ExpressionAttributeValues: map[string]dynamodbtypes.AttributeValue{
+			":entryValue": entryValue,
+		},
+	})
+	return mapUpdateError(err)
+}
+
+func (c *Client) sessionKey(sessionID string) map[string]dynamodbtypes.AttributeValue {
+	return map[string]dynamodbtypes.AttributeValue{
+		c.partitionKeyName: &dynamodbtypes.AttributeValueMemberS{Value: sessionID},
+	}
+}
+
+func mapUpdateError(err error) error {
+	if err == nil {
+		return nil
+	}
+
+	var conditionalFailure *dynamodbtypes.ConditionalCheckFailedException
+	if errors.As(err, &conditionalFailure) {
+		return ErrItemNotFound
+	}
+	return err
+}
+
+
+package sessionstorage
+
+import (
+	"context"
+
+	"github.com/aws/aws-sdk-go-v2/service/dynamodb"
+)
+
+// UpdateItem is the DynamoDB update behavior used by this package.
+type UpdateItem func(context.Context, *dynamodb.UpdateItemInput, ...func(*dynamodb.Options)) (*dynamodb.UpdateItemOutput, error)
+
+// ExtractedEntity is one stored entity value.
+type ExtractedEntity struct {
+	Value      string `dynamodbav:"value" json:"value"`
+	Confidence string `dynamodbav:"confidence" json:"confidence"`
+}
+
+// ExtractedEntities maps entity names to their value/confidence data.
+type ExtractedEntities map[string]ExtractedEntity
+
+// NestedMapUpdate describes generic nested session data:
+// map name -> entry key -> entry value.
+type NestedMapUpdate struct {
+	SessionID string
+	Maps      map[string]map[string]any
+}
+
+
+package sessionstorage
+
+// Client writes session-storage values to DynamoDB.
+type Client struct {
+	tableName        string
+	partitionKeyName string
+	update           UpdateItem
+}
+
+// New creates a DynamoDB-backed session-storage client.
+func New(tableName, partitionKeyName string, update UpdateItem) *Client {
+	return &Client{
+		tableName:        tableName,
+		partitionKeyName: partitionKeyName,
+		update:           update,
+	}
+}
+
+
+package sessionstorage
+
+import "errors"
+
+// ErrItemNotFound is returned when the target session item does not exist.
+var ErrItemNotFound = errors.New("session item not found")
