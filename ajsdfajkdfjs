@@ -1,0 +1,393 @@
+package storage
+
+// File 1 of 3 - shared types and constants.
+//
+// Shared single-table layout (one item per contact):
+//
+//	{
+//	  "contactId": "alkdjflka...",
+//	  "iva":      { "data_cache": {...}, "datacenter_assignment": "..." },
+//	  "entities": { "banking_check": { "to_account": { "value": "...", "confidence": "..." } } },
+//	  "timeToExpire": 1234567890
+//	}
+//
+// TODAY: only EntityStore (entity_store.go) uses this package.
+// FUTURE: the cache service and datacenter service migrate onto the same
+// pathWriter by just choosing their own paths - no engine changes:
+//
+//	cache:      []string{"iva", "data_cache", cacheKey}
+//	datacenter: []string{"iva", "datacenter_assignment"}
+
+import (
+	"context"
+
+	"github.com/aws/aws-sdk-go-v2/service/dynamodb"
+)
+
+const (
+	primaryKey        = "contactId"
+	entitiesAttribute = "entities" // top-level map, sibling of "iva"
+)
+
+// EntityValue - one entity leaf, stored in DynamoDB as a Map:
+// { "value": "...", "confidence": "..." }.
+// json tags parse incoming payloads; dynamodbav tags drive DynamoDB
+// marshal/unmarshal automatically.
+type EntityValue struct {
+	Value      string `json:"value" dynamodbav:"value"`
+	Confidence string `json:"confidence" dynamodbav:"confidence"`
+}
+
+// DynamoDBAPI - minimal client surface, injectable in tests.
+type DynamoDBAPI interface {
+	GetItem(ctx context.Context, params *dynamodb.GetItemInput, optFns ...func(*dynamodb.Options)) (*dynamodb.GetItemOutput, error)
+	UpdateItem(ctx context.Context, params *dynamodb.UpdateItemInput, optFns ...func(*dynamodb.Options)) (*dynamodb.UpdateItemOutput, error)
+}
+
+
+
+
+
+
+
+
+
+
+
+
+package storage
+
+// File 2 of 3 - the shared engine ("pathWriter" box in the diagram).
+//
+// Completely service-agnostic: it reads/writes a value at any []string path
+// inside the contact's item. The entity store uses it today; the cache and
+// datacenter services can adopt it later by simply passing their own paths.
+// NOTHING in this file should ever mention entities, cache, or datacenter.
+//
+// NOTE: this writer does NOT touch the item-level timeToExpire attribute.
+// TTL on the item remains whatever the existing cache/datacenter writers set.
+
+import (
+	"context"
+	"errors"
+	"fmt"
+	"strings"
+
+	"github.com/aws/aws-sdk-go-v2/aws"
+	"github.com/aws/aws-sdk-go-v2/feature/dynamodb/attributevalue"
+	"github.com/aws/aws-sdk-go-v2/service/dynamodb"
+	ddbtypes "github.com/aws/aws-sdk-go-v2/service/dynamodb/types"
+	"github.com/aws/smithy-go"
+)
+
+type pathWriter struct {
+	client    DynamoDBAPI
+	tableName string
+}
+
+func newPathWriter(client DynamoDBAPI, tableName string) *pathWriter {
+	return &pathWriter{client: client, tableName: tableName}
+}
+
+// set - the write flowchart:
+// [Try deep SET] -> on [ValidationException: document path invalid]
+// -> [Ensure parent levels with if_not_exists] -> [Retry deep SET].
+func (w *pathWriter) set(
+	ctx context.Context,
+	contactID string,
+	path []string,
+	value ddbtypes.AttributeValue,
+) error {
+	if len(path) == 0 {
+		return errors.New("path must not be empty")
+	}
+
+	// [Try deep SET] - one UpdateItem; succeeds once the maps exist.
+	err := w.setAtPath(ctx, contactID, path, value)
+	if err == nil {
+		return nil // [Success - paths already exist]
+	}
+	if !isInvalidDocumentPath(err) {
+		return err // real failure (throttle, network, auth...)
+	}
+
+	// [Ensure parent levels], shallow to deep. if_not_exists guarantees
+	// existing maps (iva, other flows, other entities) are NEVER replaced -
+	// safe even when multiple services write the same item concurrently.
+	for depth := 1; depth < len(path); depth++ {
+		if err := w.ensureMap(ctx, contactID, path[:depth]); err != nil {
+			return fmt.Errorf("failed to ensure map %q: %w", strings.Join(path[:depth], "."), err)
+		}
+	}
+
+	// [Retry deep SET - now succeeds]
+	return w.setAtPath(ctx, contactID, path, value)
+}
+
+// get - read flow: [GetItem + projection] -> [Walk nested maps] ->
+// [attributevalue.Unmarshal into out].
+// found=false with nil error for any missing level.
+func (w *pathWriter) get(
+	ctx context.Context,
+	contactID string,
+	path []string,
+	out interface{},
+) (bool, error) {
+	if len(path) == 0 {
+		return false, errors.New("path must not be empty")
+	}
+
+	names, pathExpr := exprPath(path)
+
+	result, err := w.client.GetItem(ctx, &dynamodb.GetItemInput{
+		TableName:                aws.String(w.tableName),
+		Key:                      w.key(contactID),
+		ProjectionExpression:     aws.String(pathExpr),
+		ExpressionAttributeNames: names,
+	})
+	if err != nil {
+		return false, fmt.Errorf("failed to get item: %w", err)
+	}
+	if result.Item == nil {
+		return false, nil // no record for this contact
+	}
+
+	// Walk the nesting shell down to the leaf, e.g.
+	// {entities: {banking_check: {to_account: {...}}}}.
+	var av ddbtypes.AttributeValue = &ddbtypes.AttributeValueMemberM{Value: result.Item}
+	for _, segment := range path {
+		m, ok := av.(*ddbtypes.AttributeValueMemberM)
+		if !ok {
+			return false, nil
+		}
+		child, ok := m.Value[segment]
+		if !ok {
+			return false, nil
+		}
+		av = child
+	}
+
+	if err := attributevalue.Unmarshal(av, out); err != nil {
+		return false, fmt.Errorf("failed to unmarshal value at %q: %w", strings.Join(path, "."), err)
+	}
+	return true, nil
+}
+
+// --- raw DynamoDB expressions -----------------------------------------------
+
+// setAtPath: SET #p0.#p1...#pN = :v
+func (w *pathWriter) setAtPath(
+	ctx context.Context,
+	contactID string,
+	path []string,
+	value ddbtypes.AttributeValue,
+) error {
+	names, pathExpr := exprPath(path)
+
+	_, err := w.client.UpdateItem(ctx, &dynamodb.UpdateItemInput{
+		TableName:                aws.String(w.tableName),
+		Key:                      w.key(contactID),
+		UpdateExpression:         aws.String(fmt.Sprintf("SET %s = :v", pathExpr)),
+		ExpressionAttributeNames: names,
+		ExpressionAttributeValues: map[string]ddbtypes.AttributeValue{
+			":v": value,
+		},
+	})
+	return err
+}
+
+// ensureMap: SET <path> = if_not_exists(<path>, :empty_map)
+func (w *pathWriter) ensureMap(
+	ctx context.Context,
+	contactID string,
+	path []string,
+) error {
+	names, pathExpr := exprPath(path)
+
+	_, err := w.client.UpdateItem(ctx, &dynamodb.UpdateItemInput{
+		TableName: aws.String(w.tableName),
+		Key:       w.key(contactID),
+		UpdateExpression: aws.String(fmt.Sprintf(
+			"SET %s = if_not_exists(%s, :empty_map)",
+			pathExpr, pathExpr,
+		)),
+		ExpressionAttributeNames: names,
+		ExpressionAttributeValues: map[string]ddbtypes.AttributeValue{
+			":empty_map": &ddbtypes.AttributeValueMemberM{Value: map[string]ddbtypes.AttributeValue{}},
+		},
+	})
+	return err
+}
+
+func (w *pathWriter) key(contactID string) map[string]ddbtypes.AttributeValue {
+	return map[string]ddbtypes.AttributeValue{
+		primaryKey: &ddbtypes.AttributeValueMemberS{Value: contactID},
+	}
+}
+
+// exprPath builds ExpressionAttributeNames plus "#p0.#p1..." so path
+// segments containing ':' or '.' never break the expression.
+func exprPath(path []string) (map[string]string, string) {
+	names := make(map[string]string, len(path))
+	parts := make([]string, len(path))
+	for i, segment := range path {
+		placeholder := fmt.Sprintf("#p%d", i)
+		names[placeholder] = segment
+		parts[i] = placeholder
+	}
+	return names, strings.Join(parts, ".")
+}
+
+// isInvalidDocumentPath - typed detection of DynamoDB's "document path
+// provided in the update expression is invalid" ValidationException.
+func isInvalidDocumentPath(err error) bool {
+	var apiErr smithy.APIError
+	if errors.As(err, &apiErr) {
+		return apiErr.ErrorCode() == "ValidationException" &&
+			strings.Contains(strings.ToLower(apiErr.ErrorMessage()), "document path")
+	}
+	return false
+}
+
+\
+
+
+package storage
+
+// File 3 of 3 - the entity store, the ONLY feature shipping now.
+//
+// Writes/reads the top-level "entities" map:
+//
+//	entities.<flow>.<entityName> = { value, confidence }
+//
+// When the cache and datacenter services migrate later, each gets its own
+// small file like this one (cache_store.go, datacenter_store.go), wrapping
+// the same pathWriter with their own paths. This file never changes.
+//
+// NOTE: fix the two internal import paths (ivaaws, logging) for your module.
+
+import (
+	"context"
+	"errors"
+	"fmt"
+	"strings"
+
+	"github.com/aws/aws-sdk-go-v2/config"
+	"github.com/aws/aws-sdk-go-v2/feature/dynamodb/attributevalue"
+	"github.com/aws/aws-sdk-go-v2/service/dynamodb"
+	"go.uber.org/zap"
+
+	// TODO: fix these import paths for your module
+	"your.module/internal/ivaaws"
+	"your.module/internal/logging"
+)
+
+// EntityStore - function-field style, like DatacenterAssignmentStorageService,
+// so it can be stubbed in tests.
+type EntityStore struct {
+	// SetEntity writes entities.<flow>.<entityName> = value.
+	SetEntity func(ctx context.Context, contactId ivaaws.ContactId, flow string, entityName string, value EntityValue) error
+
+	// GetEntity reads one entity back.
+	// found=false with nil error: contact, flow, or entity doesn't exist.
+	GetEntity func(ctx context.Context, contactId ivaaws.ContactId, flow string, entityName string) (value EntityValue, found bool, err error)
+
+	// GetEntities reads all of entities.<flow> as map[entityName]EntityValue.
+	GetEntities func(ctx context.Context, contactId ivaaws.ContactId, flow string) (values map[string]EntityValue, found bool, err error)
+}
+
+// NewEntityStore - production constructor.
+func NewEntityStore(tableName ivaaws.DynamoDBTableName) EntityStore {
+	cfg, err := config.LoadDefaultConfig(context.Background())
+	if err != nil {
+		logging.Logger.Error("Failed to load AWS config for entity store", zap.Error(err))
+		panic(err)
+	}
+
+	return newEntityStore(dynamodb.NewFromConfig(cfg), tableName)
+}
+
+// newEntityStore - testable constructor (inject a fake DynamoDBAPI).
+func newEntityStore(
+	dynamoClient DynamoDBAPI,
+	tableName ivaaws.DynamoDBTableName,
+) EntityStore {
+	w := newPathWriter(dynamoClient, string(tableName))
+
+	return EntityStore{
+
+		SetEntity: func(ctx context.Context, contactId ivaaws.ContactId, flow string, entityName string, value EntityValue) error {
+			// Validate inputs before touching DynamoDB (mirrors how
+			// HTTPRequestExecutor validates the request up front).
+			if err := validateEntityInput(contactId, flow, entityName, &value); err != nil {
+				logging.Logger.Error("[ENTITY] Validation failed", zap.Error(err))
+				return err
+			}
+
+			path := []string{entitiesAttribute, flow, entityName}
+
+			// struct -> DynamoDB Map (driven by the dynamodbav tags)
+			av, err := attributevalue.Marshal(value)
+			if err != nil {
+				return fmt.Errorf("failed to marshal entity value: %w", err)
+			}
+
+			if err := w.set(ctx, contactId.String(), path, av); err != nil {
+				logging.Logger.Warn(
+					"[ENTITY] Failed to store entity",
+					zap.Error(err),
+					zap.String("flow", flow),
+					zap.String("entity", entityName),
+				)
+				return err
+			}
+
+			logging.Logger.Debug("[ENTITY] Stored entity", zap.String("path", strings.Join(path, ".")))
+			return nil
+		},
+
+		GetEntity: func(ctx context.Context, contactId ivaaws.ContactId, flow string, entityName string) (EntityValue, bool, error) {
+			var value EntityValue
+			found, err := w.get(ctx, contactId.String(), []string{entitiesAttribute, flow, entityName}, &value)
+			return value, found, err
+		},
+
+		GetEntities: func(ctx context.Context, contactId ivaaws.ContactId, flow string) (map[string]EntityValue, bool, error) {
+			values := map[string]EntityValue{}
+			found, err := w.get(ctx, contactId.String(), []string{entitiesAttribute, flow}, &values)
+			return values, found, err
+		},
+	}
+}
+
+// validateEntityInput - domain validation for entity writes, applied before
+// any DynamoDB call. Reads don't need it: bad inputs simply return found=false.
+func validateEntityInput(
+	contactId ivaaws.ContactId,
+	flow string,
+	entityName string,
+	value *EntityValue,
+) error {
+	if strings.TrimSpace(contactId.String()) == "" {
+		return errors.New("contactId must not be empty")
+	}
+
+	if strings.TrimSpace(flow) == "" {
+		return errors.New("flow must not be empty")
+	}
+
+	if strings.TrimSpace(entityName) == "" {
+		return errors.New("entityName must not be empty")
+	}
+
+	if strings.TrimSpace(value.Value) == "" {
+		return fmt.Errorf("entity value must not be empty for %s.%s", flow, entityName)
+	}
+
+	// DynamoDB limit: expression attribute name values must be < 255 chars.
+	if len(flow) > 255 || len(entityName) > 255 {
+		return errors.New("flow and entityName must be under 255 characters")
+	}
+
+	return nil
+}
